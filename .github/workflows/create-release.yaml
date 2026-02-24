@@ -124,16 +124,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PREV_RELEASE_LINE=""
           if [ -n "${{ env.LAST_TAG }}" ]; then
             PREV_RELEASE_LINE="**Previous Release:** \`${{ env.LAST_TAG }}\`"
           else
             PREV_RELEASE_LINE="**Previous Release:** _None (first release)_"
           fi
 
-          gh release create "${{ env.NEW_TAG }}" \
-            --title "🚀 ${{ env.NEW_TAG }}" \
-            --notes "## Release \`${{ env.NEW_TAG }}\`
+          # Write release notes to file to avoid YAML multiline string issues
+          cat > /tmp/release-notes.md << NOTES
+## Release \`${{ env.NEW_TAG }}\`
 
 **Created by:** ${{ github.actor }}
 **Commit:** \`${{ github.sha }}\`
@@ -149,7 +148,12 @@ ${{ env.CHANGES }}
 
 ## 🚀 Deploy to Production
 Go to: **Actions → 3 - PROD Deploy (Manual)** → Run workflow
-Select tag: \`${{ env.NEW_TAG }}\`" \
+Select tag: \`${{ env.NEW_TAG }}\`
+NOTES
+
+          gh release create "${{ env.NEW_TAG }}" \
+            --title "Release ${{ env.NEW_TAG }}" \
+            --notes-file /tmp/release-notes.md \
             --latest
 
           echo ""
