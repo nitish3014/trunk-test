@@ -13,9 +13,10 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to deploy (e.g. release-abc123-5) — check Releases tab for available tags'
-        required: true
+        description: 'Release tag to deploy (e.g. release-abc123-5) — leave BLANK to auto-deploy the latest release tag'
+        required: false
         type: string
+        default: ''
       confirm_deployment:
         description: 'Type "deploy-prod" to confirm production deployment'
         required: true
@@ -28,6 +29,8 @@ jobs:
   validate-tag:
     name: Validate Release Tag
     runs-on: ubuntu-latest
+    outputs:
+      RESOLVED_TAG: ${{ steps.validate.outputs.RESOLVED_TAG }}
 
     steps:
       - name: Checkout code
@@ -45,6 +48,25 @@ jobs:
           fi
           echo "Confirmation accepted"
 
+      - name: Resolve Tag (auto-pick latest if blank)
+        run: |
+          INPUT_TAG="${{ inputs.release_tag }}"
+          # Trim any whitespace
+          INPUT_TAG=$(echo "$INPUT_TAG" | xargs)
+
+          if [ -z "$INPUT_TAG" ]; then
+            LATEST=$(git tag --sort=-creatordate | grep "^release-" | head -n 1 || true)
+            if [ -z "$LATEST" ]; then
+              echo "ERROR: No release tags found in repo - run workflow 2 first"
+              exit 1
+            fi
+            echo "No tag provided - auto-selecting latest: ${LATEST}"
+            echo "RESOLVED_TAG=${LATEST}" >> $GITHUB_ENV
+          else
+            echo "Tag provided: ${INPUT_TAG}"
+            echo "RESOLVED_TAG=${INPUT_TAG}" >> $GITHUB_ENV
+          fi
+
       - name: List All Available Release Tags
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -58,7 +80,7 @@ jobs:
             echo "$ALL_TAGS" | while read tag; do
               TAG_DATE=$(git log -1 --format="%ci" "${tag}")
               MARKER=""
-              if [ "$tag" = "${{ inputs.release_tag }}" ]; then
+              if [ "$tag" = "${{ env.RESOLVED_TAG }}" ]; then
                 MARKER="  <── SELECTED"
               fi
               echo "${COUNT}. ${tag}  [${TAG_DATE}]${MARKER}"
@@ -66,19 +88,18 @@ jobs:
             done
           fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Deploying tag: ${{ env.RESOLVED_TAG }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Validate Tag Exists in Repo
+        id: validate
         run: |
-          TAG="${{ inputs.release_tag }}"
-          if [ -z "$TAG" ]; then
-            echo "ERROR: No tag provided"
-            exit 1
-          fi
+          TAG="${{ env.RESOLVED_TAG }}"
           if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag is valid: ${TAG}"
+            echo "RESOLVED_TAG=${TAG}" >> $GITHUB_OUTPUT
           else
             echo "ERROR: Tag '${TAG}' does not exist in this repository"
-            echo "Check the Releases tab for valid tag names"
             exit 1
           fi
 
@@ -103,7 +124,7 @@ jobs:
       S3_BUCKET_DEV:    rtb-dev-artifact
       S3_BUCKET_PROD:   rtb-prod-artifact
       S3_ARTIFACT_KEY:  rtb-core-0.0.1-SNAPSHOT.jar
-      RELEASE_TAG:      ${{ inputs.release_tag }}
+      RELEASE_TAG:      ${{ needs.validate-tag.outputs.RESOLVED_TAG }}
 
     steps:
       - name: Checkout Code at Release Tag
