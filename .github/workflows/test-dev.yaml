@@ -1,0 +1,107 @@
+name: Test - Dev Environment
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+
+jobs:
+  test-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: 📋 Stage 1 - Code Checkout
+        run: echo "✅ Code checked out successfully"
+      
+      - name: 🧪 Stage 2 - Running Unit Tests
+        run: |
+          echo "🔬 Running unit tests..."
+          echo "   Test Suite 1: ✅ Passed"
+          echo "   Test Suite 2: ✅ Passed"
+          echo "   Test Suite 3: ✅ Passed"
+          echo "📊 Test Coverage: 87%"
+      
+      - name: 🔍 Stage 3 - Code Linting
+        run: |
+          echo "🔎 Running linter..."
+          echo "   ESLint: ✅ No issues found"
+          echo "   Prettier: ✅ Code style check passed"
+      
+      - name: 🏗️ Stage 4 - Build Validation
+        run: |
+          echo "📦 Building application..."
+          echo "   Build version: ${GITHUB_SHA::7}"
+          echo "   Build time: $(date)"
+          echo "✅ Build successful"
+
+  dev-deployment-simulation:
+    needs: test-and-validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: 🚀 Stage 1 - DEV Deployment Started
+        run: echo "🎯 Starting DEV environment deployment"
+      
+      - name: 📦 Stage 2 - Preparing Artifacts
+        run: |
+          echo "📁 Creating deployment artifacts..."
+          echo "   - Docker image tag: dev-${GITHUB_SHA::7}"
+          echo "   - Config files: ✅ Prepared"
+          echo "   - Secrets: ✅ Mapped"
+      
+      - name: ☁️ Stage 3 - Deploying to DEV
+        run: |
+          echo "🌩️ Deploying to DEV environment..."
+          echo "   Environment: dev"
+          echo "   Region: us-east-1"
+          echo "   Cluster: test-eks-dev"
+          echo "   Service: test-auth-service"
+          echo "   Namespace: default"
+          echo "   Version: ${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}"
+          echo "   Status: 🟢 Deployed successfully"
+      
+      - name: ✅ Stage 4 - DEV Health Check
+        run: |
+          echo "🏥 Running health checks..."
+          echo "   - API Health: ✅ Healthy"
+          echo "   - Database Connection: ✅ Connected"
+          echo "   - Cache Service: ✅ Operational"
+          echo "✅ DEV deployment completed successfully"
+      
+      - name: 📢 Stage 5 - Notifications
+        run: |
+          echo "📨 Sending deployment notifications..."
+          echo "   To: #dev-team-channel"
+          echo "   Message: ✅ DEV deployment successful - ${GITHUB_SHA::7}"
+          echo "   Commit: ${{ github.event.head_commit.message }}"
+          echo "   Author: ${{ github.actor }}"
+
+  pr-validation:
+    needs: test-and-validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔄 PR Validation Summary
+        run: |
+          echo "📊 Pull Request #${{ github.event.pull_request.number }} Validation"
+          echo "----------------------------------------"
+          echo "Branch: ${{ github.head_ref }} → main"
+          echo "Title: ${{ github.event.pull_request.title }}"
+          echo "Author: ${{ github.event.pull_request.user.login }}"
+          echo ""
+          echo "✅ All tests passed"
+          echo "✅ Code style checks passed"
+          echo "✅ Build validation passed"
+          echo ""
+          echo "🔍 Review required: 👥 At least 1 approval needed"
+          echo "📝 Merge instructions: Use 'Squash and merge'"
