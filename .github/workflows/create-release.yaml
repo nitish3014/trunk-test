@@ -130,8 +130,6 @@ jobs:
           printf '%s\n' "## Deploy to Production" >> /tmp/release-notes.md
           printf '%s\n' "Go to: Actions > 3 - PROD Deploy (Manual) > Run workflow" >> /tmp/release-notes.md
           printf '%s\n' "Select tag: ${{ env.NEW_TAG }}" >> /tmp/release-notes.md
-          echo "Release notes written to /tmp/release-notes.md"
-          cat /tmp/release-notes.md
 
       - name: Create GitHub Release
         env:
@@ -141,8 +139,86 @@ jobs:
             --title "Release ${{ env.NEW_TAG }}" \
             --notes-file /tmp/release-notes.md \
             --latest
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "GitHub Release created successfully"
-          echo "Tag    : ${{ env.NEW_TAG }}"
+          echo "GitHub Release created: ${{ env.NEW_TAG }}"
           echo "View at: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${{ env.NEW_TAG }}"
+
+      # ── KEY STEP: rewrite workflow 3 dropdown with real tag names ──
+      - name: Update Prod Deploy Workflow Dropdown with Real Tag Names
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Pull latest main to avoid conflicts
+          git fetch origin main
+          git checkout main
+          git pull origin main
+
+          # Collect latest 5 release tags newest first (including the one just created)
+          ALL_TAGS=$(git tag --sort=-creatordate | grep "^release-" | head -n 5 || true)
+
+          if [ -z "$ALL_TAGS" ]; then
+            echo "No tags found - skipping dropdown update"
+            exit 0
+          fi
+
+          # Build the options block with real tag names
+          OPTIONS_BLOCK=""
+          while read tag; do
+            if [ -n "$tag" ]; then
+              OPTIONS_BLOCK="${OPTIONS_BLOCK}          - ${tag}\n"
+            fi
+          done <<< "$ALL_TAGS"
+
+          # Get the first (latest) tag as default
+          DEFAULT_TAG=$(echo "$ALL_TAGS" | head -n 1)
+
+          echo "Updating dropdown with tags:"
+          echo "$ALL_TAGS"
+
+          # Use python to safely rewrite the options block in the YAML file
+          python3 << PYEOF
+          import re
+
+          with open('.github/workflows/3-prod-deploy.yml', 'r') as f:
+              content = f.read()
+
+          # Build new options block
+          tags = """$ALL_TAGS""".strip().split('\n')
+          tags = [t.strip() for t in tags if t.strip()]
+
+          options_lines = '\n'.join(f'          - {t}' for t in tags)
+          default_tag = tags[0] if tags else ''
+
+          # Replace the options block between 'options:' and the next key
+          new_options = f'        options:\n{options_lines}'
+          content = re.sub(
+              r'        options:.*?(?=\n        [a-z]|\n      [a-z])',
+              new_options,
+              content,
+              flags=re.DOTALL
+          )
+
+          # Replace default value
+          content = re.sub(
+              r"(        default: ').*?(')",
+              f"\\g<1>{default_tag}\\g<2>",
+              content
+          )
+
+          with open('.github/workflows/3-prod-deploy.yml', 'w') as f:
+              f.write(content)
+
+          print(f"Dropdown updated with {len(tags)} tags")
+          print(f"Default set to: {default_tag}")
+          PYEOF
+
+          # Commit and push the updated workflow file back to main
+          git add .github/workflows/3-prod-deploy.yml
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "ci: update prod deploy dropdown with latest release tags [skip ci]"
+          git push origin main
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Workflow 3 dropdown updated successfully"
+          echo "Next prod deploy will show real tag names"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
