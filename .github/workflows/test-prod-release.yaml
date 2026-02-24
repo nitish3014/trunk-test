@@ -1,12 +1,27 @@
 name: 3 - PROD Deploy (Manual)
 
+# ─────────────────────────────────────────────────────────────────
+# The dropdown below is AUTO-UPDATED by workflow 2 every time
+# a new release tag is created. You will always see the 5 most
+# recent real tag names to choose from.
+#
+# HOW TO USE:
+# 1. Run workflow 2 to create a release tag first
+# 2. Come here → Run workflow → pick tag from dropdown
+# 3. Type "deploy-prod" to confirm
+# 4. Approve in the production environment gate
+# ─────────────────────────────────────────────────────────────────
+
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Select release tag to deploy to PROD (format: release-*)'
+        description: 'Select release tag to deploy to PROD'
         required: true
-        type: string
+        type: choice
+        default: 'no-releases-yet'
+        options:
+          - no-releases-yet
       confirm_deployment:
         description: 'Type "deploy-prod" to confirm production deployment'
         required: true
@@ -14,66 +29,65 @@ on:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────
-  # JOB 1: Show all available release tags (for audit log visibility)
+  # JOB 1: Validate selected tag
   # ─────────────────────────────────────────────────────────────────
-  show-available-tags:
-    name: "Available Release Tags"
+  validate-tag:
+    name: Validate Selected Tag
     runs-on: ubuntu-latest
-    outputs:
-      selected_tag_valid: ${{ steps.validate_tag.outputs.VALID }}
 
     steps:
-      - name: Checkout code (full history)
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: List All Release Tags (Newest First)
+      - name: Show All Available Release Tags
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🏷️  ALL AVAILABLE RELEASE TAGS (newest → oldest)"
+          echo "ALL RELEASE TAGS (newest to oldest)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          ALL_TAGS=$(git tag --sort=-creatordate | grep "^release-" || echo "")
+          ALL_TAGS=$(git tag --sort=-creatordate | grep "^release-" || true)
           if [ -z "$ALL_TAGS" ]; then
-            echo "  ❌ No release tags found!"
-            echo "     Run workflow 2 - Create Release Tag first."
+            echo "ERROR: No release tags found - run workflow 2 first"
           else
             COUNT=1
             echo "$ALL_TAGS" | while read tag; do
-              TAG_DATE=$(git log -1 --format="%ci" "${tag}" 2>/dev/null || echo "unknown")
-              TAG_SHA=$(git rev-list -n 1 "${tag}" 2>/dev/null | cut -c1-7 || echo "unknown")
+              TAG_DATE=$(git log -1 --format="%ci" "${tag}")
               MARKER=""
-              [ "$tag" = "${{ inputs.release_tag }}" ] && MARKER=" ◄── SELECTED"
-              echo "  ${COUNT}. ${tag}  [sha: ${TAG_SHA}] [${TAG_DATE}]${MARKER}"
+              if [ "$tag" = "${{ inputs.release_tag }}" ]; then
+                MARKER="  <── SELECTED FOR PROD DEPLOY"
+              fi
+              echo "${COUNT}. ${tag}  [${TAG_DATE}]${MARKER}"
               COUNT=$((COUNT + 1))
             done
           fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo ""
-          echo "  Selected tag: ${{ inputs.release_tag }}"
-          echo "  Triggered by: ${{ github.actor }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Validate Selected Tag Exists
-        id: validate_tag
+      - name: Validate Tag is Not Placeholder
+        run: |
+          if [ "${{ inputs.release_tag }}" = "no-releases-yet" ]; then
+            echo "ERROR: No real release tag selected"
+            echo "Please run workflow 2 to create a release tag first"
+            exit 1
+          fi
+          echo "Selected tag: ${{ inputs.release_tag }}"
+
+      - name: Validate Tag Exists in Repo
         run: |
           TAG="${{ inputs.release_tag }}"
           if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "✅ Tag '${TAG}' exists in repository"
-            echo "VALID=true" >> $GITHUB_OUTPUT
+            echo "Tag exists and is valid: ${TAG}"
           else
-            echo "❌ Tag '${TAG}' does NOT exist in repository"
-            echo "   Please check available tags above and try again"
-            echo "VALID=false" >> $GITHUB_OUTPUT
+            echo "ERROR: Tag '${TAG}' does not exist in repository"
             exit 1
           fi
 
   # ─────────────────────────────────────────────────────────────────
-  # JOB 2: Deploy to PROD
+  # JOB 2: Deploy to PROD with manual approval gate
   # ─────────────────────────────────────────────────────────────────
   deploy-prod:
-    name: "Deploy: Production → ${{ inputs.release_tag }}"
-    needs: show-available-tags
+    name: Deploy Production - ${{ inputs.release_tag }}
+    needs: validate-tag
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -81,123 +95,111 @@ jobs:
       contents: read
 
     env:
-      AWS_REGION:        us-east-1
-      EKS_CLUSTER_NAME:  rtb-prod-eks
-      DEPLOYMENT_NAME:   rtb-prod-auth-service
-      K8S_NAMESPACE:     default
-      BASTION_USER:      ubuntu
-      S3_BUCKET_DEV:     rtb-dev-artifact
-      S3_BUCKET_PROD:    rtb-prod-artifact
-      S3_ARTIFACT_KEY:   rtb-core-0.0.1-SNAPSHOT.jar
+      AWS_REGION:       us-east-1
+      EKS_CLUSTER_NAME: rtb-prod-eks
+      DEPLOYMENT_NAME:  rtb-prod-auth-service
+      K8S_NAMESPACE:    default
+      BASTION_USER:     ubuntu
+      S3_BUCKET_DEV:    rtb-dev-artifact
+      S3_BUCKET_PROD:   rtb-prod-artifact
+      S3_ARTIFACT_KEY:  rtb-core-0.0.1-SNAPSHOT.jar
+      RELEASE_TAG:      ${{ inputs.release_tag }}
 
     steps:
-      # ── Safety Checks ─────────────────────────────────────────────
       - name: Validate Confirmation Text
         run: |
           if [ "${{ inputs.confirm_deployment }}" != "deploy-prod" ]; then
-            echo "❌ Confirmation failed!"
-            echo "   You typed  : '${{ inputs.confirm_deployment }}'"
-            echo "   Expected   : 'deploy-prod'"
+            echo "ERROR: Confirmation failed"
+            echo "You typed : ${{ inputs.confirm_deployment }}"
+            echo "Expected  : deploy-prod"
             exit 1
           fi
-          echo "✅ Confirmation accepted"
+          echo "Confirmed by: ${{ github.actor }}"
 
-      - name: Validate Tag Format
+      - name: Set Version from Tag
         run: |
-          TAG="${{ inputs.release_tag }}"
-          if [[ ! "$TAG" =~ ^release- ]]; then
-            echo "❌ Invalid tag format: '${TAG}'"
-            echo "   Tag must start with 'release-'"
-            exit 1
-          fi
+          TAG="${{ env.RELEASE_TAG }}"
           VERSION="${TAG#release-}"
-          echo "VERSION=${VERSION}"   >> $GITHUB_ENV
-          echo "RELEASE_TAG=${TAG}"   >> $GITHUB_ENV
-          echo "✅ Tag    : ${TAG}"
-          echo "✅ Version: ${VERSION}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Tag     : ${TAG}"
+          echo "Version : ${VERSION}"
 
-      # ── Checkout at exact release tag ─────────────────────────────
       - name: Checkout Code at Release Tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
-      # ── Show what we are deploying ─────────────────────────────────
       - name: Show Deployment Summary
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🚀 PRODUCTION DEPLOYMENT SUMMARY"
+          echo "PRODUCTION DEPLOYMENT SUMMARY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Release Tag  : ${{ env.RELEASE_TAG }}"
-          echo "  Version      : ${{ env.VERSION }}"
-          echo "  Commit SHA   : $(git rev-parse HEAD)"
-          echo "  Commit Msg   : $(git log -1 --pretty=format:'%s')"
-          echo "  Tagged by    : $(git log -1 --pretty=format:'%an')"
-          echo "  Triggered by : ${{ github.actor }}"
-          echo "  Target Cluster: ${{ env.EKS_CLUSTER_NAME }}"
-          echo "  Namespace    : ${{ env.K8S_NAMESPACE }}"
+          echo "  Release tag    : ${{ env.RELEASE_TAG }}"
+          echo "  Version        : ${{ env.VERSION }}"
+          echo "  Commit SHA     : $(git rev-parse HEAD)"
+          echo "  Commit message : $(git log -1 --pretty=format:'%s')"
+          echo "  Triggered by   : ${{ github.actor }}"
+          echo "  Target cluster : ${{ env.EKS_CLUSTER_NAME }}"
+          echo "  Namespace      : ${{ env.K8S_NAMESPACE }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Notify PROD Deploy Start
         run: |
-          echo "📣 Slack/GChat — PRODUCTION deploy started"
-          echo "    Tag         : ${{ env.RELEASE_TAG }}"
-          echo "    Version     : ${{ env.VERSION }}"
-          echo "    Triggered by: ${{ github.actor }}"
-          echo "    URL         : ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "Slack/GChat - PRODUCTION deploy started"
+          echo "  Tag         : ${{ env.RELEASE_TAG }}"
+          echo "  Version     : ${{ env.VERSION }}"
+          echo "  Triggered by: ${{ github.actor }}"
+          echo "  URL         : ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-      # ── CICD Stages ───────────────────────────────────────────────
-      - name: Configure AWS Credentials (PROD Account)
-        run: echo "🔐 Assuming OIDC role → PROD AWS account..."
+      - name: Configure AWS Credentials PROD Account
+        run: echo "Assuming OIDC role in PROD AWS account..."
 
-      - name: Promote JAR Artifact DEV S3 → PROD S3
+      - name: Promote JAR Artifact DEV S3 to PROD S3
         run: |
-          echo "📦 Promoting artifact:"
-          echo "    FROM : s3://${{ env.S3_BUCKET_DEV }}/${{ env.S3_ARTIFACT_KEY }}"
-          echo "    TO   : s3://${{ env.S3_BUCKET_PROD }}/${{ env.S3_ARTIFACT_KEY }}"
+          echo "Promoting artifact:"
+          echo "  FROM : s3://${{ env.S3_BUCKET_DEV }}/${{ env.S3_ARTIFACT_KEY }}"
+          echo "  TO   : s3://${{ env.S3_BUCKET_PROD }}/${{ env.S3_ARTIFACT_KEY }}"
 
       - name: Fetch Promoted JAR from PROD S3
-        run: echo "📥 Fetching ${{ env.S3_ARTIFACT_KEY }} from s3://${{ env.S3_BUCKET_PROD }}/..."
+        run: echo "Fetching ${{ env.S3_ARTIFACT_KEY }} from s3://${{ env.S3_BUCKET_PROD }}/..."
 
-      - name: Fetch Secrets from Secrets Manager (PROD)
-        run: echo "🔑 Fetching rtb-prod/db | rtb-prod/aws | rtb-prod/auth-service..."
+      - name: Fetch Secrets from Secrets Manager PROD
+        run: echo "Fetching rtb-prod/db | rtb-prod/aws | rtb-prod/auth-service..."
 
       - name: Fetch Kubeconfig via PROD Bastion
-        run: echo "🖥️ SSH → PROD bastion | fetching kubeconfig for ${{ env.EKS_CLUSTER_NAME }}..."
+        run: echo "SSH into PROD bastion - fetching kubeconfig for ${{ env.EKS_CLUSTER_NAME }}..."
 
-      - name: Sync Secrets to Kubernetes (PROD)
-        run: echo "📋 kubectl apply secrets → ${{ env.K8S_NAMESPACE }} namespace | ${{ env.EKS_CLUSTER_NAME }}..."
+      - name: Sync Secrets to Kubernetes PROD
+        run: echo "kubectl apply secrets to ${{ env.K8S_NAMESPACE }} on ${{ env.EKS_CLUSTER_NAME }}..."
 
       - name: Build Docker Image on PROD Bastion
         run: |
-          echo "🐳 Building Docker image on PROD bastion"
-          echo "    JAR source : s3://${{ env.S3_BUCKET_PROD }}/ (promoted from DEV — same binary)"
-          echo "    Image tag  : ${{ env.VERSION }}"
+          echo "Building Docker image on PROD bastion"
+          echo "  JAR      : ${{ env.S3_ARTIFACT_KEY }} promoted from DEV S3"
+          echo "  Image tag: ${{ env.VERSION }}"
 
       - name: Push Docker Image to PROD ECR
-        run: echo "📤 Pushing → PROD ECR | ${{ env.DEPLOYMENT_NAME }}:${{ env.VERSION }}"
+        run: echo "Pushing to PROD ECR - ${{ env.DEPLOYMENT_NAME }}:${{ env.VERSION }}"
 
       - name: Deploy to PROD EKS
         run: |
-          echo "🚀 kubectl set image → ${{ env.DEPLOYMENT_NAME }}:${{ env.VERSION }}"
-          echo "    Cluster  : ${{ env.EKS_CLUSTER_NAME }}"
-          echo "    Namespace: ${{ env.K8S_NAMESPACE }}"
+          echo "kubectl set image - ${{ env.DEPLOYMENT_NAME }}:${{ env.VERSION }}"
+          echo "  Cluster  : ${{ env.EKS_CLUSTER_NAME }}"
+          echo "  Namespace: ${{ env.K8S_NAMESPACE }}"
 
       - name: Verify PROD Rollout
-        run: echo "✅ kubectl rollout status → ${{ env.EKS_CLUSTER_NAME }} | timeout 300s..."
+        run: echo "kubectl rollout status - ${{ env.EKS_CLUSTER_NAME }} timeout 300s..."
 
-      - name: Clean Up Old PROD ECR Images (keep 5)
-        run: echo "🧹 Pruning PROD ECR → retaining latest 5 images..."
+      - name: Clean Up Old PROD ECR Images
+        run: echo "Pruning PROD ECR - retaining latest 5 images..."
 
-      # ── Final Summary ──────────────────────────────────────────────
-      - name: Deployment Complete Summary
+      - name: Deployment Complete
         if: success()
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ PRODUCTION DEPLOYMENT COMPLETE"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Release Tag : ${{ env.RELEASE_TAG }}"
+          echo "PRODUCTION DEPLOYMENT COMPLETE"
+          echo "  Release tag : ${{ env.RELEASE_TAG }}"
           echo "  Version     : ${{ env.VERSION }}"
           echo "  Cluster     : ${{ env.EKS_CLUSTER_NAME }}"
           echo "  Deployed by : ${{ github.actor }}"
@@ -206,9 +208,9 @@ jobs:
       - name: Notify PROD Deploy Result
         if: always()
         run: |
-          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo "✅ Succeeded" || echo "❌ Failed")
-          echo "📣 Slack/GChat — PRODUCTION deploy ${STATUS}"
-          echo "    Tag         : ${{ env.RELEASE_TAG }}"
-          echo "    Version     : ${{ env.VERSION }}"
-          echo "    Triggered by: ${{ github.actor }}"
-          echo "    URL         : ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo "Succeeded" || echo "Failed")
+          echo "Slack/GChat - PRODUCTION deploy ${STATUS}"
+          echo "  Tag         : ${{ env.RELEASE_TAG }}"
+          echo "  Version     : ${{ env.VERSION }}"
+          echo "  Triggered by: ${{ github.actor }}"
+          echo "  URL         : ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
