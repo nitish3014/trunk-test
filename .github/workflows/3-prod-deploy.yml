@@ -1,27 +1,21 @@
 name: 3 - PROD Deploy (Manual)
 
 # ─────────────────────────────────────────────────────────────────
-# The dropdown below is AUTO-UPDATED by workflow 2 every time
-# a new release tag is created. You will always see the 5 most
-# recent real tag names to choose from.
-#
 # HOW TO USE:
-# 1. Run workflow 2 to create a release tag first
-# 2. Come here → Run workflow → pick tag from dropdown
-# 3. Type "deploy-prod" to confirm
-# 4. Approve in the production environment gate
+# 1. Check your release tags at: Repo → Releases tab
+# 2. Actions → "3 - PROD Deploy (Manual)" → Run workflow
+# 3. Paste the release tag name  e.g. release-abc123-5
+# 4. Type "deploy-prod" to confirm
+# 5. Approve in the production environment gate
 # ─────────────────────────────────────────────────────────────────
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Select release tag to deploy to PROD'
+        description: 'Release tag to deploy (e.g. release-abc123-5) — check Releases tab for available tags'
         required: true
-        type: choice
-        default: 'no-releases-yet'
-        options:
-          - no-releases-yet
+        type: string
       confirm_deployment:
         description: 'Type "deploy-prod" to confirm production deployment'
         required: true
@@ -29,10 +23,10 @@ on:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────
-  # JOB 1: Validate selected tag
+  # JOB 1: Validate tag exists before going to approval gate
   # ─────────────────────────────────────────────────────────────────
   validate-tag:
-    name: Validate Selected Tag
+    name: Validate Release Tag
     runs-on: ubuntu-latest
 
     steps:
@@ -41,21 +35,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Show All Available Release Tags
+      - name: Validate Confirmation Text
+        run: |
+          if [ "${{ inputs.confirm_deployment }}" != "deploy-prod" ]; then
+            echo "ERROR: Confirmation failed"
+            echo "You typed : ${{ inputs.confirm_deployment }}"
+            echo "Expected  : deploy-prod"
+            exit 1
+          fi
+          echo "Confirmation accepted"
+
+      - name: List All Available Release Tags
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "ALL RELEASE TAGS (newest to oldest)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           ALL_TAGS=$(git tag --sort=-creatordate | grep "^release-" || true)
           if [ -z "$ALL_TAGS" ]; then
-            echo "ERROR: No release tags found - run workflow 2 first"
+            echo "No release tags found - run workflow 2 first"
           else
             COUNT=1
             echo "$ALL_TAGS" | while read tag; do
               TAG_DATE=$(git log -1 --format="%ci" "${tag}")
               MARKER=""
               if [ "$tag" = "${{ inputs.release_tag }}" ]; then
-                MARKER="  <── SELECTED FOR PROD DEPLOY"
+                MARKER="  <── SELECTED"
               fi
               echo "${COUNT}. ${tag}  [${TAG_DATE}]${MARKER}"
               COUNT=$((COUNT + 1))
@@ -63,27 +67,23 @@ jobs:
           fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: Validate Tag is Not Placeholder
-        run: |
-          if [ "${{ inputs.release_tag }}" = "no-releases-yet" ]; then
-            echo "ERROR: No real release tag selected"
-            echo "Please run workflow 2 to create a release tag first"
-            exit 1
-          fi
-          echo "Selected tag: ${{ inputs.release_tag }}"
-
       - name: Validate Tag Exists in Repo
         run: |
           TAG="${{ inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            echo "ERROR: No tag provided"
+            exit 1
+          fi
           if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag exists and is valid: ${TAG}"
+            echo "Tag is valid: ${TAG}"
           else
-            echo "ERROR: Tag '${TAG}' does not exist in repository"
+            echo "ERROR: Tag '${TAG}' does not exist in this repository"
+            echo "Check the Releases tab for valid tag names"
             exit 1
           fi
 
   # ─────────────────────────────────────────────────────────────────
-  # JOB 2: Deploy to PROD with manual approval gate
+  # JOB 2: Deploy to PROD — requires environment approval
   # ─────────────────────────────────────────────────────────────────
   deploy-prod:
     name: Deploy Production - ${{ inputs.release_tag }}
@@ -106,15 +106,11 @@ jobs:
       RELEASE_TAG:      ${{ inputs.release_tag }}
 
     steps:
-      - name: Validate Confirmation Text
-        run: |
-          if [ "${{ inputs.confirm_deployment }}" != "deploy-prod" ]; then
-            echo "ERROR: Confirmation failed"
-            echo "You typed : ${{ inputs.confirm_deployment }}"
-            echo "Expected  : deploy-prod"
-            exit 1
-          fi
-          echo "Confirmed by: ${{ github.actor }}"
+      - name: Checkout Code at Release Tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
 
       - name: Set Version from Tag
         run: |
@@ -123,12 +119,6 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "Tag     : ${TAG}"
           echo "Version : ${VERSION}"
-
-      - name: Checkout Code at Release Tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-          fetch-depth: 0
 
       - name: Show Deployment Summary
         run: |
