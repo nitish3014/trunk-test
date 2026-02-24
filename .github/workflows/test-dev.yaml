@@ -1,17 +1,14 @@
-name: CI-CD Trunk Based Pipeline (TEST)
+name: 1 - DEV CI/CD Pipeline
 
 on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────
-  # JOB 1 : CI
-  # ─────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────
+  # JOB 1 : CI - Build & Test
+  # ─────────────────────────────────────────────
   ci:
     name: "CI: Build & Test"
     runs-on: ubuntu-latest
@@ -19,32 +16,35 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set Version
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          VER="${SHA}-${GITHUB_RUN_NUMBER}"
+          echo "VERSION=${VER}" >> $GITHUB_ENV
+          echo "🏷️ Version: ${VER}"
+
       - name: Install Dependencies
         run: echo "📦 Installing dependencies..."
 
       - name: Run Unit Tests
         run: echo "🧪 Running unit tests..."
 
-      - name: Run Lint / Code Quality
+      - name: Run Code Quality / Lint
         run: echo "🔍 Running lint and code quality checks..."
 
       - name: Build Artifact
-        run: echo "🔨 Building application artifact (JAR)..."
+        run: echo "🔨 Building JAR artifact..."
 
-      - name: Upload Artifact to S3
-        run: echo "📤 Uploading artifact to DEV S3 bucket..."
+      - name: Upload Artifact to DEV S3
+        run: echo "📤 Uploading artifact to s3://rtb-dev-artifact/..."
 
-      - name: CI Complete
-        run: echo "✅ CI passed — all checks green"
-
-  # ─────────────────────────────────────────────────────────────────
-  # JOB 2 : Deploy DEV (auto on merge to main)
-  # ─────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────
+  # JOB 2 : Deploy to DEV
+  # ─────────────────────────────────────────────
   deploy-dev:
-    name: "Deploy: Development (Auto)"
+    name: "Deploy: Development"
     needs: ci
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: development
     outputs:
       version: ${{ steps.version.outputs.VERSION }}
@@ -60,88 +60,50 @@ jobs:
           VER="${SHA}-${GITHUB_RUN_NUMBER}"
           echo "VERSION=${VER}" >> $GITHUB_ENV
           echo "VERSION=${VER}" >> $GITHUB_OUTPUT
-          echo "🏷️ Version set to: ${VER}"
+          echo "🏷️ Version: ${VER}"
 
       - name: Notify DEV Deploy Start
-        run: echo "📣 Notifying Slack/GChat — DEV deploy started for version ${{ env.VERSION }}"
+        run: |
+          echo "📣 Slack/GChat — DEV deploy started"
+          echo "    Repo   : ${GITHUB_REPOSITORY}"
+          echo "    Version: ${{ env.VERSION }}"
+          echo "    Commit : $(git log -1 --pretty=format:'%s')"
+          echo "    By     : $(git log -1 --pretty=format:'%an')"
 
-      - name: Configure AWS Credentials (DEV)
-        run: echo "🔐 Assuming OIDC role in DEV AWS account..."
+      - name: Configure AWS Credentials (DEV Account)
+        run: echo "🔐 Assuming OIDC role → DEV AWS account..."
 
       - name: Fetch JAR from DEV S3
         run: echo "📥 Fetching rtb-core-0.0.1-SNAPSHOT.jar from s3://rtb-dev-artifact/..."
 
-      - name: Fetch Secrets from AWS Secrets Manager (DEV)
+      - name: Fetch Secrets from Secrets Manager (DEV)
         run: echo "🔑 Fetching rtb-dev/db | rtb-dev/aws | rtb-dev/auth-service..."
 
       - name: Fetch Kubeconfig via DEV Bastion
-        run: echo "🖥️ SSH into DEV bastion → fetching kubeconfig for rtb-eks-dev..."
+        run: echo "🖥️ SSH → DEV bastion | fetching kubeconfig for rtb-eks-dev..."
 
       - name: Sync Secrets to Kubernetes (DEV)
-        run: echo "📋 Applying secrets to namespace default in rtb-eks-dev..."
+        run: echo "📋 kubectl apply secrets → default namespace | rtb-eks-dev..."
 
       - name: Build Docker Image on DEV Bastion
-        run: echo "🐳 Building Docker image on DEV bastion with tag ${{ env.VERSION }}..."
+        run: echo "🐳 docker build on DEV bastion → rtb-dev-auth-service:${{ env.VERSION }}..."
 
       - name: Push Docker Image to DEV ECR
-        run: echo "📤 Pushing image to DEV ECR → rtb-dev-auth-service:${{ env.VERSION }}"
+        run: echo "📤 Pushing → DEV ECR | rtb-dev-auth-service:${{ env.VERSION }}"
 
       - name: Deploy to DEV EKS
         run: echo "🚀 kubectl set image → rtb-dev-auth-service:${{ env.VERSION }} on rtb-eks-dev..."
 
       - name: Verify DEV Rollout
-        run: echo "✅ kubectl rollout status → deployment successful on rtb-eks-dev"
+        run: echo "✅ kubectl rollout status → rtb-eks-dev | timeout 300s..."
 
-      - name: Clean Up Old DEV ECR Images
-        run: echo "🧹 Pruning DEV ECR — keeping latest 5 images..."
+      - name: Clean Up Old DEV ECR Images (keep 5)
+        run: echo "🧹 Pruning DEV ECR → retaining latest 5 images..."
 
       - name: Notify DEV Deploy Result
-        run: echo "📣 Notifying Slack/GChat — DEV deploy SUCCESS for version ${{ env.VERSION }}"
-
-  # ─────────────────────────────────────────────────────────────────
-  # JOB 3 : Create Release Tag + GitHub Release (approval required)
-  # ─────────────────────────────────────────────────────────────────
-  create-release:
-    name: "Release: Cut Tag & GitHub Release (Approval Required)"
-    needs: deploy-dev
-    runs-on: ubuntu-latest
-    environment: release-approval
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Confirm Dev is Stable
+        if: always()
         run: |
-          echo "🔎 Dev deployment verified for version: ${{ needs.deploy-dev.outputs.version }}"
-          echo "    Approved by: ${{ github.actor }}"
-
-      - name: Create and Push Git Tag
-        env:
-          VERSION: ${{ needs.deploy-dev.outputs.version }}
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "release-${VERSION}" \
-            -m "Release ${VERSION} | Approved by ${{ github.actor }} | SHA: ${{ github.sha }}"
-          git push origin "release-${VERSION}"
-          echo "✅ Tag pushed: release-${VERSION}"
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION:  ${{ needs.deploy-dev.outputs.version }}
-        run: |
-          LAST_TAG=$(git tag --sort=-creatordate | grep "^release-" | sed -n '2p' || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            CHANGES=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%an)" --no-merges)
-          else
-            CHANGES=$(git log --pretty=format:"- %s (%an)" --no-merges -10)
-          fi
-          gh release create "release-${VERSION}" \
-            --title "Release ${VERSION}" \
-            --notes "## Release ${VERSION}
+          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo "✅ Succeeded" || echo "❌ Failed")
+          echo "📣 Slack/GChat — DEV deploy ${STATUS}"
+          echo "    Version: ${{ env.VERSION }}"
+          echo "    URL    : ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
