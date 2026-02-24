@@ -4,161 +4,145 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: 'Release version label (e.g. v1.0.0 or leave blank to auto-generate from latest dev version)'
+        description: 'Release version label e.g. v1.0.0 (leave blank to auto-generate)'
         required: false
         type: string
         default: ''
 
 jobs:
   create-release:
-    name: "Create Release Tag & GitHub Release"
+    name: Create Release Tag and GitHub Release
     runs-on: ubuntu-latest
-    environment: release-approval        # human approval gate before tag is cut
+    environment: release-approval
     permissions:
       contents: write
 
     steps:
-      - name: Checkout code (full history)
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0                 # full history needed for changelog + tagging
+          fetch-depth: 0
 
-      # ── Show last release for reference ───────────────────────────
       - name: Show Last Release Info
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📋 LAST RELEASE INFO"
+          echo "LAST RELEASE INFO"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          LAST_TAG=$(git tag --sort=-creatordate | grep "^release-" | head -n 1 || echo "")
-
+          LAST_TAG=$(git tag --sort=-creatordate | grep "^release-" | head -n 1 || true)
           if [ -z "$LAST_TAG" ]; then
-            echo "  ⚠️  No previous release tags found — this will be the first release"
+            echo "No previous release tags found - this will be the first release"
             echo "LAST_TAG=" >> $GITHUB_ENV
           else
             LAST_TAG_DATE=$(git log -1 --format="%ci" "${LAST_TAG}")
             LAST_TAG_SHA=$(git rev-list -n 1 "${LAST_TAG}")
             LAST_TAG_AUTHOR=$(git log -1 --format="%an" "${LAST_TAG}")
-            echo "  Tag    : ${LAST_TAG}"
-            echo "  SHA    : ${LAST_TAG_SHA}"
-            echo "  Date   : ${LAST_TAG_DATE}"
-            echo "  Author : ${LAST_TAG_AUTHOR}"
+            echo "Tag    : ${LAST_TAG}"
+            echo "SHA    : ${LAST_TAG_SHA}"
+            echo "Date   : ${LAST_TAG_DATE}"
+            echo "Author : ${LAST_TAG_AUTHOR}"
             echo "LAST_TAG=${LAST_TAG}" >> $GITHUB_ENV
           fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ── All existing release tags (newest first) ───────────────────
       - name: Show All Existing Release Tags
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🏷️  ALL RELEASE TAGS (newest → oldest)"
+          echo "ALL RELEASE TAGS (newest to oldest)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          ALL_TAGS=$(git tag --sort=-creatordate | grep "^release-" || echo "")
+          ALL_TAGS=$(git tag --sort=-creatordate | grep "^release-" || true)
           if [ -z "$ALL_TAGS" ]; then
-            echo "  No release tags yet"
+            echo "No release tags yet"
           else
             COUNT=1
             echo "$ALL_TAGS" | while read tag; do
               TAG_DATE=$(git log -1 --format="%ci" "${tag}")
-              echo "  ${COUNT}. ${tag}  [${TAG_DATE}]"
+              echo "${COUNT}. ${tag}  [${TAG_DATE}]"
               COUNT=$((COUNT + 1))
             done
           fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ── Determine new release tag name ────────────────────────────
-      - name: Set New Release Tag
+      - name: Set New Release Tag Name
         run: |
           SHA=$(git rev-parse --short HEAD)
           RUN="${GITHUB_RUN_NUMBER}"
-
-          if [ -n "${{ inputs.release_version }}" ]; then
-            # Use user-provided label + sha for uniqueness
-            NEW_TAG="release-${{ inputs.release_version }}-${SHA}"
+          INPUT_VER="${{ inputs.release_version }}"
+          if [ -n "$INPUT_VER" ]; then
+            NEW_TAG="release-${INPUT_VER}-${SHA}"
           else
-            # Auto-generate from sha + run number (matches dev version format)
             NEW_TAG="release-${SHA}-${RUN}"
           fi
-
           echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-          echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🆕 NEW RELEASE TAG WILL BE: ${NEW_TAG}"
+          echo "NEW RELEASE TAG WILL BE: ${NEW_TAG}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ── Generate changelog ─────────────────────────────────────────
       - name: Generate Changelog
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📝 CHANGELOG (commits since last release)"
+          echo "CHANGELOG (commits since last release)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if [ -n "${{ env.LAST_TAG }}" ]; then
-            CHANGES=$(git log ${{ env.LAST_TAG }}..HEAD --pretty=format:"- %s (%an)" --no-merges)
+          LAST="${{ env.LAST_TAG }}"
+          if [ -n "$LAST" ]; then
+            CHANGES=$(git log "${LAST}..HEAD" --pretty=format:"- %s (%an)" --no-merges || true)
           else
-            CHANGES=$(git log --pretty=format:"- %s (%an)" --no-merges -20)
+            CHANGES=$(git log --pretty=format:"- %s (%an)" --no-merges -20 || true)
           fi
-
           if [ -z "$CHANGES" ]; then
             CHANGES="- No new commits since last release"
           fi
-
           echo "$CHANGES"
           echo "CHANGES<<EOF" >> $GITHUB_ENV
-          echo "$CHANGES"    >> $GITHUB_ENV
-          echo "EOF"         >> $GITHUB_ENV
+          echo "$CHANGES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ── Push Git tag ───────────────────────────────────────────────
       - name: Create and Push Git Tag
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ env.NEW_TAG }}" \
-            -m "Release ${{ env.NEW_TAG }} | Approved by ${{ github.actor }} | SHA: ${{ github.sha }}"
+          git tag "${{ env.NEW_TAG }}" -m "Release ${{ env.NEW_TAG }} approved by ${{ github.actor }}"
           git push origin "${{ env.NEW_TAG }}"
-          echo "✅ Tag pushed: ${{ env.NEW_TAG }}"
+          echo "Tag pushed: ${{ env.NEW_TAG }}"
 
-      # ── Create GitHub Release (visible in Releases UI) ─────────────
+      - name: Write Release Notes to File
+        run: |
+          LAST="${{ env.LAST_TAG }}"
+          if [ -n "$LAST" ]; then
+            PREV_LINE="Previous Release: ${LAST}"
+          else
+            PREV_LINE="Previous Release: None (this is the first release)"
+          fi
+          printf '%s\n' "## Release ${{ env.NEW_TAG }}" > /tmp/release-notes.md
+          printf '%s\n' "" >> /tmp/release-notes.md
+          printf '%s\n' "**Created by:** ${{ github.actor }}" >> /tmp/release-notes.md
+          printf '%s\n' "**Commit:** ${{ github.sha }}" >> /tmp/release-notes.md
+          printf '%s\n' "**Branch:** main" >> /tmp/release-notes.md
+          printf '%s\n' "**${PREV_LINE}**" >> /tmp/release-notes.md
+          printf '%s\n' "" >> /tmp/release-notes.md
+          printf '%s\n' "---" >> /tmp/release-notes.md
+          printf '%s\n' "" >> /tmp/release-notes.md
+          printf '%s\n' "## Changes since last release" >> /tmp/release-notes.md
+          printf '%s\n' "${{ env.CHANGES }}" >> /tmp/release-notes.md
+          printf '%s\n' "" >> /tmp/release-notes.md
+          printf '%s\n' "---" >> /tmp/release-notes.md
+          printf '%s\n' "" >> /tmp/release-notes.md
+          printf '%s\n' "## Deploy to Production" >> /tmp/release-notes.md
+          printf '%s\n' "Go to: Actions > 3 - PROD Deploy (Manual) > Run workflow" >> /tmp/release-notes.md
+          printf '%s\n' "Select tag: ${{ env.NEW_TAG }}" >> /tmp/release-notes.md
+          echo "Release notes written to /tmp/release-notes.md"
+          cat /tmp/release-notes.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "${{ env.LAST_TAG }}" ]; then
-            PREV_RELEASE_LINE="**Previous Release:** \`${{ env.LAST_TAG }}\`"
-          else
-            PREV_RELEASE_LINE="**Previous Release:** _None (first release)_"
-          fi
-
-          # Write release notes to file to avoid YAML multiline string issues
-          cat > /tmp/release-notes.md << NOTES
-## Release \`${{ env.NEW_TAG }}\`
-
-**Created by:** ${{ github.actor }}
-**Commit:** \`${{ github.sha }}\`
-**Branch:** main
-${PREV_RELEASE_LINE}
-
----
-
-## 📝 Changes since last release
-${{ env.CHANGES }}
-
----
-
-## 🚀 Deploy to Production
-Go to: **Actions → 3 - PROD Deploy (Manual)** → Run workflow
-Select tag: \`${{ env.NEW_TAG }}\`
-NOTES
-
           gh release create "${{ env.NEW_TAG }}" \
             --title "Release ${{ env.NEW_TAG }}" \
             --notes-file /tmp/release-notes.md \
             --latest
-
-          echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ GitHub Release created!"
-          echo "   Tag    : ${{ env.NEW_TAG }}"
-          echo "   View at: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${{ env.NEW_TAG }}"
+          echo "GitHub Release created successfully"
+          echo "Tag    : ${{ env.NEW_TAG }}"
+          echo "View at: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${{ env.NEW_TAG }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
