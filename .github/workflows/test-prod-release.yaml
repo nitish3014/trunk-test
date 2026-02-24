@@ -1,0 +1,114 @@
+name: CI-CD Production Deploy (Manual) (TEST)
+
+# ─────────────────────────────────────────────────────────────────
+# HOW TO TRIGGER:
+# Repo → Actions → "CI-CD Production Deploy (Manual)" → Run workflow
+#   release_tag        : copy from Releases tab  e.g. release-abc123-42
+#   confirm_deployment : type exactly  deploy-prod
+# ─────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to deploy (e.g. release-abc123-42)'
+        required: true
+        type: string
+      confirm_deployment:
+        description: 'Type "deploy-prod" to confirm'
+        required: true
+        type: string
+
+jobs:
+  deploy-prod:
+    name: "Deploy: Production → ${{ inputs.release_tag }}"
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ── Safety Checks ─────────────────────────────────────────────
+      - name: Validate Confirmation Text
+        run: |
+          if [ "${{ inputs.confirm_deployment }}" != "deploy-prod" ]; then
+            echo "❌ Confirmation failed — type exactly: deploy-prod"
+            exit 1
+          fi
+          echo "✅ Confirmed by: ${{ github.actor }}"
+
+      - name: Validate Release Tag Format
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          if [[ ! "$TAG" =~ ^release-[a-zA-Z0-9]+-[0-9]+$ ]]; then
+            echo "❌ Invalid tag: '${TAG}'"
+            echo "   Expected format: release-<sha>-<run_number>  e.g. release-abc123-42"
+            exit 1
+          fi
+          VERSION="${TAG#release-}"
+          echo "VERSION=${VERSION}"   >> $GITHUB_ENV
+          echo "RELEASE_TAG=${TAG}"   >> $GITHUB_ENV
+          echo "✅ Tag: ${TAG} | Version: ${VERSION}"
+
+      # ── Checkout at exact release tag ─────────────────────────────
+      - name: Checkout Code at Release Tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Notify PROD Deploy Start
+        run: |
+          echo "📣 Notifying Slack/GChat — PRODUCTION deploy started"
+          echo "    Release Tag : ${{ env.RELEASE_TAG }}"
+          echo "    Version     : ${{ env.VERSION }}"
+          echo "    Triggered by: ${{ github.actor }}"
+
+      # ── Stages ────────────────────────────────────────────────────
+      - name: Configure AWS Credentials (PROD)
+        run: echo "🔐 Assuming OIDC role in PROD AWS account..."
+
+      - name: Promote JAR Artifact DEV S3 → PROD S3
+        run: |
+          echo "📦 Copying rtb-core-0.0.1-SNAPSHOT.jar"
+          echo "    FROM : s3://rtb-dev-artifact/"
+          echo "    TO   : s3://rtb-prod-artifact/"
+
+      - name: Fetch Promoted JAR from PROD S3
+        run: echo "📥 Fetching rtb-core-0.0.1-SNAPSHOT.jar from s3://rtb-prod-artifact/..."
+
+      - name: Fetch Secrets from AWS Secrets Manager (PROD)
+        run: echo "🔑 Fetching rtb-prod/db | rtb-prod/aws | rtb-prod/auth-service..."
+
+      - name: Fetch Kubeconfig via PROD Bastion
+        run: echo "🖥️ SSH into PROD bastion → fetching kubeconfig for rtb-prod-eks..."
+
+      - name: Sync Secrets to Kubernetes (PROD)
+        run: echo "📋 Applying secrets to namespace default in rtb-prod-eks..."
+
+      - name: Build Docker Image on PROD Bastion
+        run: |
+          echo "🐳 Building Docker image on PROD bastion"
+          echo "    JAR    : promoted from DEV S3 (same binary)"
+          echo "    Tag    : ${{ env.VERSION }}"
+
+      - name: Push Docker Image to PROD ECR
+        run: echo "📤 Pushing image to PROD ECR → rtb-prod-auth-service:${{ env.VERSION }}"
+
+      - name: Deploy to PROD EKS
+        run: echo "🚀 kubectl set image → rtb-prod-auth-service:${{ env.VERSION }} on rtb-prod-eks..."
+
+      - name: Verify PROD Rollout
+        run: echo "✅ kubectl rollout status → deployment successful on rtb-prod-eks"
+
+      - name: Clean Up Old PROD ECR Images
+        run: echo "🧹 Pruning PROD ECR — keeping latest 5 images..."
+
+      - name: Notify PROD Deploy Result
+        if: always()
+        run: |
+          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo "✅ Succeeded" || echo "❌ Failed")
+          echo "📣 Notifying Slack/GChat — PRODUCTION deploy ${STATUS}"
+          echo "    Tag         : ${{ env.RELEASE_TAG }}"
+          echo "    Version     : ${{ env.VERSION }}"
+          echo "    Triggered by: ${{ github.actor }}"
